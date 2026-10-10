@@ -1,0 +1,203 @@
+# Cubierta Forestal MLOps · docker compose
+#
+#   s1 mlflow-db   PostgreSQL  <--->  s2 MLflow        (experiments, runs, registry metadata)
+#   s3 MinIO                   <--->  s2 MLflow        (artifacts: models, metrics, plots)
+#   s6 Inference API           <--->  s2 MLflow        (loads the registered model to serve)
+#   s7 Nginx                   ---->  s6 API x N       (load balancer, only public API port)
+#
+# Deployment on a VM (copy the repo, then from its root):
+#   API_REPLICAS=1 docker compose up -d           # one replica, 1 CPU / 1 GB
+#   API_REPLICAS=3 docker compose up -d           # scale to three (Nginx picks them up)
+# Tunables (env or .env): API_REPLICAS, API_CPUS, API_MEMORY, NGINX_PORT,
+# MLFLOW_ALLOWED_HOSTS.
+#
+# Locust is NOT part of this stack: the load generator runs on another host
+# with docker-compose.locust.yml, so it does not compete with the API for CPU.
+#
+# Serving-only stack: training (Jupyter + business Postgres) is not deployed.
+# The API serves the model already registered in MLflow, so the volumes
+# cubierta_forestal_mlflow_db and cubierta_forestal_minio must contain it
+# (copy them from the machine where the model was trained). Without a model
+# under the `production` alias the API replicas exit and restart.
+#
+# All images are published on Docker Hub (DOCKERHUB_USER, default
+# `juanmava`) for linux/amd64 and linux/arm64; nothing is built on the VM.
+# Publish with scripts/publish-images.sh (tags below + `latest`). A plain
+# `docker build && docker push` from a Mac publishes arm64 only and the
+# image will not run on an amd64 VM.
+
+name: cubierta-forestal
+
+x-mlflow-client-env: &mlflow-client-env
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  # Artifacts are proxied by the server (--serve-artifacts), so clients only
+  # need the tracking URI. The S3 variables are kept so direct access to the
+  # bucket also works when needed.
+  MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin
+
+services:
+  # ------------------------------------------------------------------------- #
+  # s1 · PostgreSQL (MLflow backend store, internal to the stack, own volume)
+  # ------------------------------------------------------------------------- #
+  mlflow-db:
+    image: postgres:16
+    container_name: cf-mlflow-db
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow
+    ports:
+      - "5431:5432"
+    volumes:
+      - mlflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "mlflow", "-d", "mlflow" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------------- #
+  # s3 · MinIO (artifact store for MLflow)
+  #
+  # Chainguard build of MinIO (MinIO removed its own public images in 2026-09).
+  # Distroless-style image: runs as uid 65532, ships `minio` and `mc` only.
+  # ------------------------------------------------------------------------- #
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: cf-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: [ "CMD", "mc", "ready", "local" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # One-shot: MinIO does not create buckets on start. Reuse the same image
+  # (it ships `mc`) to create the MLflow artifact bucket before the server
+  # comes up.
+  minio-init:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: cf-minio-init
+    entrypoint: [ "/bin/sh", "-c" ]
+    command:
+      - |
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/mlflow
+        echo "bucket ready: mlflow"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------------- #
+  # s2 · MLflow (tracking server + model registry)
+  #
+  # Backend store: mlflow-db. Artifacts: MinIO bucket `mlflow`, proxied through
+  # the server so clients never need bucket credentials.
+  # ------------------------------------------------------------------------- #
+  mlflow:
+    image: ${DOCKERHUB_USER:-juanmava}/cubierta-forestal-mlflow:0.1.0
+    pull_policy: always
+    container_name: cf-mlflow
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - postgresql+psycopg2://mlflow:mlflow@mlflow-db:5432/mlflow
+      - --artifacts-destination
+      - s3://mlflow
+      - --serve-artifacts
+      # DNS-rebinding guard: by default only localhost / private IPs pass.
+      # Allow the in-network service name (clients) and the OrbStack domain.
+      - --allowed-hosts
+      # On a VM add its IP/hostname via MLFLOW_ALLOWED_HOSTS to open the UI.
+      - "localhost:*,127.0.0.1:*,mlflow:*,*.orb.local${MLFLOW_ALLOWED_HOSTS:+,${MLFLOW_ALLOWED_HOSTS}}"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    ports:
+      # Host port 5001: macOS AirPlay Receiver squats 5000 on the host.
+      - "5001:5000"
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/health', timeout=4)" ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      mlflow-db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------------- #
+  # s6 · Inference API (serves the model registered in MLflow)
+  #
+  # Several replicas behind Nginx: no container_name and no host port, so
+  # compose can scale it. Only reachable from the host through Nginx.
+  # ------------------------------------------------------------------------- #
+  inference-api:
+    image: ${DOCKERHUB_USER:-juanmava}/cubierta-forestal-api:0.1.1
+    pull_policy: always
+    expose:
+      - "8000"
+    environment:
+      <<: *mlflow-client-env
+      MODEL_NAME: cubierta-forestal
+      # Registry alias resolved at startup: models:/<MODEL_NAME>@<MODEL_ALIAS>
+      MODEL_ALIAS: production
+    deploy:
+      replicas: ${API_REPLICAS:-3}
+      resources:
+        limits:
+          cpus: "${API_CPUS:-1}"
+          memory: ${API_MEMORY:-1g}
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------------- #
+  # s7 · Nginx (load balancer, single entry point to the Inference API)
+  # ------------------------------------------------------------------------- #
+  nginx:
+    image: nginx:1.28-alpine
+    container_name: cf-nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      inference-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mlflow-db-data:
+    name: cubierta_forestal_mlflow_db
+  minio-data:
+    name: cubierta_forestal_minio
