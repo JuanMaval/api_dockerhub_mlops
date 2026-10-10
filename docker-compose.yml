@@ -20,8 +20,9 @@
 # (copy them from the machine where the model was trained). Without a model
 # under the `production` alias the API replicas exit and restart.
 #
-# All images are published on Docker Hub (DOCKERHUB_USER, default
-# `juanmava`) for linux/amd64 and linux/arm64; nothing is built on the VM.
+# The API image is published on Docker Hub (DOCKERHUB_USER, default
+# `juanmava`) for linux/amd64 and linux/arm64; MLflow uses the official
+# ghcr.io image. Nothing is built on the VM.
 # Publish with scripts/publish-images.sh (tags below + `latest`). A plain
 # `docker build && docker push` from a Mac publishes arm64 only and the
 # image will not run on an amd64 VM.
@@ -107,28 +108,33 @@ services:
   #
   # Backend store: mlflow-db. Artifacts: MinIO bucket `mlflow`, proxied through
   # the server so clients never need bucket credentials.
+  #
+  # Official MLflow image. It ships MLflow only, so the two client libraries
+  # the server needs (psycopg2 for Postgres, boto3 for S3/MinIO) are installed
+  # at container start instead of baking a custom image. This needs network
+  # access on every start and adds ~30-60 s before the server is up (see
+  # start_period). Pin both versions to keep starts reproducible.
   # ------------------------------------------------------------------------- #
   mlflow:
-    image: ${DOCKERHUB_USER:-juanmava}/cubierta-forestal-mlflow:0.1.0
-    pull_policy: always
+    image: ghcr.io/mlflow/mlflow:v3.16.1
     container_name: cf-mlflow
+    entrypoint: [ "/bin/sh", "-c" ]
     command:
-      - mlflow
-      - server
-      - --host
-      - 0.0.0.0
-      - --port
-      - "5000"
-      - --backend-store-uri
-      - postgresql+psycopg2://mlflow:mlflow@mlflow-db:5432/mlflow
-      - --artifacts-destination
-      - s3://mlflow
-      - --serve-artifacts
-      # DNS-rebinding guard: by default only localhost / private IPs pass.
-      # Allow the in-network service name (clients) and the OrbStack domain.
-      - --allowed-hosts
-      # On a VM add its IP/hostname via MLFLOW_ALLOWED_HOSTS to open the UI.
-      - "localhost:*,127.0.0.1:*,mlflow:*,*.orb.local${MLFLOW_ALLOWED_HOSTS:+,${MLFLOW_ALLOWED_HOSTS}}"
+      - |
+        pip install --no-cache-dir --quiet \
+          psycopg2-binary==2.9.10 \
+          boto3==1.40.49
+        # DNS-rebinding guard (--allowed-hosts): by default only localhost /
+        # private IPs pass. The in-network service name (clients) and the
+        # OrbStack domain are allowed; on a VM add its IP/hostname via
+        # MLFLOW_ALLOWED_HOSTS to open the UI.
+        exec mlflow server \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --backend-store-uri postgresql+psycopg2://mlflow:mlflow@mlflow-db:5432/mlflow \
+          --artifacts-destination s3://mlflow \
+          --serve-artifacts \
+          --allowed-hosts "localhost:*,127.0.0.1:*,mlflow:*,*.orb.local${MLFLOW_ALLOWED_HOSTS:+,${MLFLOW_ALLOWED_HOSTS}}"
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minioadmin
@@ -141,7 +147,8 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 30s
+      # Covers the pip install at start plus MLflow's own boot.
+      start_period: 90s
     depends_on:
       mlflow-db:
         condition: service_healthy
