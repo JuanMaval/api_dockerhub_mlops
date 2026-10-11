@@ -231,3 +231,9 @@ Gráficas de la sesión completa al detener la prueba: entre las 20:00 y las 20:
 Fallos acumulados al final: 238 `HTTP 502` en `/predict [1 row]` y 50 en `/predict [20 rows]`, entre las 20:01 y las 20:19.
 
 ![Escenario 2, fallos](docs/images/3-4-carga-escenario-2.png)
+
+### 4. Red Tailscale entre los dos servidores
+
+Consola de administración de Tailscale con las dos máquinas de la tailnet conectadas: `macbook-pro-de-juanca` con la IP `100.113.71.108` (servidor A, el stack de inferencia, que es el `LOCUST_HOST` de las capturas anteriores) y `kevins-macbook-pro` con la IP `100.64.66.105` (servidor B, el generador de carga). Locust alcanza a Nginx por esa IP privada sin exponer el puerto 80 a internet.
+
+![Máquinas en la red Tailscale](docs/images/4-tailscale-network.png)
