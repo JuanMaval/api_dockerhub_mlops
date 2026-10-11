@@ -172,6 +172,29 @@ Vigilar también el generador con `docker stats` en el servidor B: si se satura 
 - La imagen de la API no arranca en la VM: fue publicada solo para `arm64`. Hay que republicarla con `scripts/publish-images.sh` desde el repositorio de entrenamiento.
 - `docker compose up` falla con `Set LOCUST_HOST`: el archivo de Locust exige esa variable; no tiene un valor por defecto a propósito.
 
+##Conclusiones finales
+
+##¿Cuál es la concurrencia máxima sostenible y cuántos RPS procesa una réplica limitada a 1 CPU y 1 GB?
+•	La concurrencia máxima sostenible es de 126 usuarios
+•	85,7 RPS de procesamiento por replica
+
+##¿Cuál es la concurrencia máxima sostenible y cuántos RPS procesan tres réplicas con esos mismos límites por réplica?
+•	La concurrencia máxima sostenible es de 350 usuarios
+•	81,5 RPS de procesamiento por replica
+
+##¿En qué porcentaje cambió la capacidad? ¿El aumento fue cercano a tres veces o aparecieron otros cuellos de botella?
+•	La capacidad crecio en un 277%. Si es cercano a las tres veces pero no es lineal el crecimiento con el numero de replicas
+
+##¿Qué recurso se saturó primero y qué evidencia muestran docker stats, Locust y la máquina generadora de carga?
+•	En docker stats, apunta a la CPU. Es el recurso que llega a la meseta del 100 % de su límite mientras los demás no se saturan. La red está muy baja (38–51 kB/s), así que no es el límite. La memoria está en 1,03–1,05 GB, corresponde entre el 96 % y el 98 % del límite. No es lo que frena el throughput, porque se mantiene plana, pero deja muy poco margen y hay riesgo de que el contenedor muera por OOM si la carga crece. 
+
+##¿Qué servicios adicionales —por ejemplo MLflow, base de datos o balanceador— pudieron limitar el resultado?
+•	Mlflow y postgress no se ven afectados  por la estructura del modelo, el cual no se consulta con cada petición que se realiza en la api.
+ 
+<img width="442" height="406" alt="image" src="https://github.com/user-attachments/assets/4cc0ef86-c61a-42d1-8ef1-308f0aaa0847" />
+
+
+
 ## Evidencias
 
 ### 1. Arquitectura y servicios en ejecución
