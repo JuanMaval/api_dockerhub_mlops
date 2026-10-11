@@ -1,2 +1,5 @@
 # Local tooling cache (skill registry)
 .atl/
+
+# macOS
+.DS_Store

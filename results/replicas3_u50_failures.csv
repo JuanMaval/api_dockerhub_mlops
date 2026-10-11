@@ -1,0 +1,4 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,/predict [1 row],CatchResponseError('HTTP 0'),34,2026-10-11T00:17:45Z,2026-10-11T00:17:53Z
+GET,/health,"RetriesExceeded('http://100.120.92.58:80/health', 0, original=timed out)",3,2026-10-11T00:17:45Z,2026-10-11T00:17:52Z
+POST,/predict [20 rows],CatchResponseError('HTTP 0'),8,2026-10-11T00:17:45Z,2026-10-11T00:17:53Z
