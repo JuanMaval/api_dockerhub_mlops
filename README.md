@@ -175,11 +175,11 @@ Vigilar también el generador con `docker stats` en el servidor B: si se satura 
 ## Conclusiones finales
 
 ### ¿Cuál es la concurrencia máxima sostenible y cuántos RPS procesa una réplica limitada a 1 CPU y 1 GB?
-•	La concurrencia máxima sostenible es de 126 usuarios. 
+•	La concurrencia máxima sostenible es de 126 usuarios. <br>
 •	85,7 RPS de procesamiento por replica. 
 
 ### ¿Cuál es la concurrencia máxima sostenible y cuántos RPS procesan tres réplicas con esos mismos límites por réplica?
-•	La concurrencia máxima sostenible es de 350 usuarios. 
+•	La concurrencia máxima sostenible es de 350 usuarios. <br>
 •	81,5 RPS de procesamiento por replica. 
 
 ### ¿En qué porcentaje cambió la capacidad? ¿El aumento fue cercano a tres veces o aparecieron otros cuellos de botella?
